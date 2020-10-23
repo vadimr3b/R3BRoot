@@ -24,5 +24,7 @@
 #pragma link C++ class R3BNeulandMCMon+;
 #pragma link C++ class R3BNeulandPrimaryClusterFinder+;
 #pragma link C++ class R3BNeulandPrimaryInteractionFinder+;
+#pragma link C++ class R3BNeulandReaction+;
+#pragma link C++ class R3BNeulandEnergyTracker+;
 
 #endif

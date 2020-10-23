@@ -23,7 +23,9 @@ set(SRCS
     R3BNeuland.cxx
     R3BNeulandMCMon.cxx
     R3BNeulandPrimaryClusterFinder.cxx
-    R3BNeulandPrimaryInteractionFinder.cxx)
+    R3BNeulandPrimaryInteractionFinder.cxx
+    R3BNeulandReaction.cxx
+    R3BNeulandEnergyTracker.cxx)
 change_file_extension(*.cxx
                       *.h
                       HEADERS

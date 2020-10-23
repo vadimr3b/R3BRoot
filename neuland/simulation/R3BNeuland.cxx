@@ -15,13 +15,18 @@
 #include "FairRun.h"
 #include "FairRuntimeDb.h"
 #include "R3BMCStack.h"
+#include "R3BNeulandEnergyTracker.h"
 #include "R3BNeulandGeoPar.h"
 #include "R3BNeulandPoint.h"
+#include "R3BNeulandReaction.h"
 #include "TClonesArray.h"
 #include "TGeoBBox.h"
 #include "TGeoManager.h"
 #include "TParticle.h"
 #include "TVirtualMC.h"
+
+#include <array>
+#include <vector>
 
 // Initialize variables from Birk' s Law
 static constexpr Double_t BirkdP = 1.032;
@@ -81,16 +86,40 @@ R3BNeuland::~R3BNeuland()
         fNeulandPoints->Delete();
         delete fNeulandPoints;
     }
+    if (fNeutronReaction)
+        delete fNeutronReaction;
+            if (fEnergyTracker)
+        delete fEnergyTracker;
 }
 
 void R3BNeuland::Initialize()
 {
     LOG(INFO) << "R3BNeuland initialization ...";
 
+    FairRuntimeDb* rtdb = FairRun::Instance()->GetRuntimeDb();
+    fNeulandGeoPar = (R3BNeulandGeoPar*)rtdb->getContainer("R3BNeulandGeoPar");
+    fGeoNodeNeuland = nullptr;
+    for (Int_t i = 0; i < gGeoManager->GetTopNode()->GetNdaughters(); i++)
+    {
+        if (TString(gGeoManager->GetTopNode()->GetDaughter(i)->GetVolume()->GetName()) == "volNeuland")
+        {
+            fGeoNodeNeuland = gGeoManager->GetTopNode()->GetDaughter(i);
+            break;
+        }
+    }
+
+    if (!fGeoNodeNeuland)
+    {
+        LOG(FATAL) << "volNeuland not found";
+    }
+
     FairDetector::Initialize();
 
     WriteParameterFile();
     ResetValues();
+
+    fNeutronReaction = new R3BNeulandReaction();
+    fEnergyTracker = new R3BNeulandEnergyTracker();
 }
 
 Bool_t R3BNeuland::ProcessHits(FairVolume*)
@@ -148,6 +177,8 @@ Bool_t R3BNeuland::ProcessHits(FairVolume*)
                                                       gMC->CurrentEvent(),
                                                       fLightYield);
 
+        fEnergyTracker->SetParticleYield(gMC->TrackPid(), fELoss, fLightYield);
+
         // Increment number of LandPoints for this track
         auto stack = (R3BStack*)gMC->GetStack();
         stack->AddPoint(kNEULAND);
@@ -158,6 +189,69 @@ Bool_t R3BNeuland::ProcessHits(FairVolume*)
 }
 
 Bool_t R3BNeuland::CheckIfSensitive(std::string name) { return name == "volBC408"; }
+
+void R3BNeuland::FinishEvent()
+{
+    auto stack = (R3BStack*)gMC->GetStack();
+    const auto nParticles = stack->GetNtrack();
+    auto particles = (TClonesArray*)stack->GetListOfParticles();
+
+    fNeutronReaction->SetInitialNeutronEnergy(((TParticle*)particles->At(0))->Ek() * 1e3);
+    for (auto p = stack->GetNprimary(); p < nParticles; ++p)
+    {
+        auto particle = (TParticle*)particles->At(p);
+        auto mID = particle->GetMother(0);
+        auto mParticle = (TParticle*)particles->At(mID);
+        if (mParticle->GetMother(0) == -1 && mParticle->GetPdgCode() == PDG_Neutron)
+        {
+            const auto energy = particle->Ek() * 1e3;
+            const auto time = particle->T() * 1e9;
+
+            int paddle = -1;
+            int part = 3; // Air
+
+            double posCave[3] = { particle->Vx(), particle->Vy(), particle->Vz() };
+            double posNeuLAND[3];
+            fGeoNodeNeuland->GetMatrix()->MasterToLocal(posCave, posNeuLAND);
+
+            for (auto d = 0; d < fGeoNodeNeuland->GetNdaughters(); ++d)
+            {
+                auto daughter = fGeoNodeNeuland->GetDaughter(d);
+                double posPaddle[3];
+                daughter->MasterToLocal(posNeuLAND, posPaddle);
+                if (daughter->GetVolume()->Contains(posPaddle))
+                {
+                    paddle = d;
+
+                    for (auto paddlepart = 0; paddlepart < daughter->GetNdaughters(); ++paddlepart)
+                    {
+                        auto partNode = daughter->GetDaughter(paddlepart);
+                        double posPart[3];
+                        partNode->MasterToLocal(posPaddle, posPart);
+                        if (partNode->GetVolume()->Contains(posPart))
+                        {
+                            part = paddlepart;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (time < fNeutronReaction->GetInteractionTime())
+            {
+                fNeutronReaction->Reset();
+                fNeutronReaction->SetInteractionTime(time);
+                fNeutronReaction->SetBarPart(part);
+                fNeutronReaction->SetVertex(posCave);
+            }
+            fNeutronReaction->AddReactionProduct(
+                particle->GetPdgCode(), energy, { particle->Px() * 1e3, particle->Py() * 1e3, particle->Pz() * 1e3 });
+        }
+    }
+
+    fNeutronReaction->Finalize();
+}
 
 void R3BNeuland::EndOfEvent()
 {
@@ -180,17 +274,23 @@ TClonesArray* R3BNeuland::GetCollection(Int_t iColl) const
 void R3BNeuland::Register()
 {
     FairRootManager::Instance()->Register("NeulandPoints", GetName(), fNeulandPoints, kTRUE);
+    FairRootManager::Instance()->RegisterAny("NeutronFirstInteraction", fNeutronReaction, kTRUE);
+    FairRootManager::Instance()->RegisterAny("EnergyTracker", fEnergyTracker, kTRUE);
 }
 
 void R3BNeuland::Print(Option_t*) const
 {
     LOG(INFO) << "R3BNeuland: " << fNeulandPoints->GetEntries() << " Neuland Points registered in this event";
+    if (fNeutronReaction->GetReactionTyp() >= 0)
+        fNeutronReaction->Print();
 }
 
 void R3BNeuland::Reset()
 {
     fNeulandPoints->Clear();
     ResetValues();
+    fNeutronReaction->Reset();
+    fEnergyTracker->Reset();
 }
 
 void R3BNeuland::ResetValues()
@@ -207,26 +307,7 @@ void R3BNeuland::ResetValues()
 
 void R3BNeuland::WriteParameterFile()
 {
-    FairRuntimeDb* rtdb = FairRun::Instance()->GetRuntimeDb();
-    fNeulandGeoPar = (R3BNeulandGeoPar*)rtdb->getContainer("R3BNeulandGeoPar");
-
-    // Really bad way to find the Neuland *node* (not the volume!)
-    TGeoNode* geoNodeNeuland = nullptr;
-    for (Int_t i = 0; i < gGeoManager->GetTopNode()->GetNdaughters(); i++)
-    {
-        if (TString(gGeoManager->GetTopNode()->GetDaughter(i)->GetVolume()->GetName()) == "volNeuland")
-        {
-            geoNodeNeuland = gGeoManager->GetTopNode()->GetDaughter(i);
-            break;
-        }
-    }
-
-    if (!geoNodeNeuland)
-    {
-        LOG(FATAL) << "volNeuland not found";
-    }
-
-    fNeulandGeoPar->SetNeulandGeoNode(geoNodeNeuland);
+    fNeulandGeoPar->SetNeulandGeoNode(fGeoNodeNeuland);
     fNeulandGeoPar->setChanged();
 }
 

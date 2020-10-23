@@ -21,6 +21,8 @@
 
 class FairVolume;
 class TClonesArray;
+class R3BNeulandReaction;
+class R3BNeulandEnergyTracker;
 class R3BNeulandGeoPar;
 
 /**
@@ -67,6 +69,8 @@ class R3BNeuland : public R3BDetector
 
     Bool_t ProcessHits(FairVolume* = nullptr) override;
 
+    void FinishEvent() override;
+
     void EndOfEvent() override;
 
     void Register() override;
@@ -88,6 +92,9 @@ class R3BNeuland : public R3BDetector
   private:
     TClonesArray* fNeulandPoints;     //!
     R3BNeulandGeoPar* fNeulandGeoPar; //!
+    TGeoNode* fGeoNodeNeuland;        //!
+    R3BNeulandReaction* fNeutronReaction; //!
+    R3BNeulandEnergyTracker* fEnergyTracker; //!
 
     /** Track information to be stored until the track leaves the active volume. */
     Int_t fTrackID;
